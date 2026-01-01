@@ -1,0 +1,2 @@
+# CPM80_SORD_M23
+CP/M-80 for SORD M23
