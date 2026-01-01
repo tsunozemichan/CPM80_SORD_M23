@@ -1,0 +1,2091 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; BIOS of CP/M-80 ver2.2 for SORD M23 ver.20230103
+; 	The creator of the machine-dependent part is tsunozemi@twitter
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+
+msize	EQU	58	;cp/m version memory size in kilobytes
+
+;
+;	"bias" is address offset from 3400h for memory systems
+;	than 16k (referred to as"b" throughout the text)
+;
+bias	EQU	(MSIZE-20)*1024
+ccp		EQU	3400H+BIAS	;base of ccp
+bdos	EQU	CCP+806H	;base of bdos
+bios	EQU	CCP+1600H	;base of bios
+cdisk	EQU	0004H	;current disk number 0=a,... l5=p
+iobyte	EQU	0003H	;intel i/o byte
+;
+
+;
+; FDC I/O ports
+;
+FDC_COMMAND_REG EQU 0C0H
+FDC_STATUS_REG 	EQU FDC_COMMAND_REG
+FDC_TRACK_REG 	EQU 0C1H
+FDC_SECTOR_REG 	EQU 0C2H
+FDC_DATA_REG 	EQU 0C3H
+DMA_ADDRESS 	EQU 0C4H
+FDC_CONTROL_REG EQU 0C5H
+DMA_BANK_SEL 	EQU 0C6H
+;
+; WBOOT Transfer Address
+WBOOT_ADDRESS_L EQU wboot_address
+WBOOT_ADDRESS_H EQU WBOOT_ADDRESS_L + 1H
+
+;
+; CRTC ports
+;
+VRAM_TXT_TOP EQU 0F800H
+VRAM_ATR_TOP EQU 0F000H
+CRTC_ADD EQU 0F0H
+CRTC_VAL EQU 0F1H
+WIDTH_SCREEN EQU 50H ; 80文字モードの1行のバイト数
+CURSOL_XY_ADDR EQU 0FFF0H ; カーソルのX,Y座標を保存するアドレス
+
+; Ascii code Constants
+CR	EQU	0DH ; Carriage Return
+LF	EQU	0AH ; Line Feed
+BS	EQU	08H ; Back Space
+DEL	EQU	7FH ; Delete
+HT  EQU 09H ; Horizontal Tab
+VT  EQU 0BH ; Vertical Tab
+BEL EQU 07H ; Bell
+NP  EQU 0CH ; Formfeed (also: New page NP)
+ESC EQU 1BH ; Escape
+
+
+; Keyboard scan buffer
+; キーボードスキャンの実装上、末尾のアドレスが00であることが条件になっている。
+KEYBOARD_SCAN_BUFFER EQU 0EE00H
+
+
+; CTC Timer Initialization for CP/M
+; Ch0を10ms周期のタイマーとして設定（IM2割り込み）
+
+CTC_CH0     EQU 0FCh        ; CTC Ch0ポート
+VEC_BASE    EQU 00h         ; CTCベクタベース
+IM2_TABLE   EQU 0FF00h      ; IM2割り込みベクタテーブル
+CTC_VEC_CH0 EQU 00h         ; Ch0のベクタオフセット
+
+;
+;*****************************************************
+;*                                                   *
+;*         CP/M to host disk constants               *
+;*                                                   *
+;*****************************************************
+blksiz equ 2048	;CP/M allocation size
+hstsiz equ 256	;host disk sector size
+hstspt equ 16	;host disk sectors/trk
+hstblk equ hstsiz/128	;CP/M sects/host buff
+cpmspt equ hstblk * hstspt	;CP/M sectors/track
+secmsk equ hstblk-1	;sector mask
+;smask	hstblk	;compute sector mask
+secshf equ 1	;log2(hstblk)
+;
+;*****************************************************
+;*                                                   *
+;*        BDOS constants on entry to write           *
+;*                                                   *
+;*****************************************************
+wrall equ 0	;write to allocated
+wrdir equ 1	;write to directory
+wrual equ 2	;write to unallocated
+
+		ORG	BIOS	;origin of this program
+nsects	EQU	($-CCP)/128	;warm start sector count
+;
+;	jump vector for individual subroutines
+;
+		JP	boot	;cold start
+wboote:	JP	wboot	;warm start
+		JP	const	;console status
+		JP	conin	;console character in
+		JP	conout	;console character out
+		JP	list	;list character out
+		JP	punch	;punch character out
+		JP	reader	;reader character out
+		JP	home	;move head to home position
+		JP	seldsk	;select disk
+		JP	settrk	;set track number
+		JP	setsec	;set sector number
+		JP	setdma	;set dma address
+		JP	read	;read disk
+		JP	write	;write disk
+		JP	listst	;return list status
+		JP	sectran	;sector translate
+
+;
+;	fixed data tables for four-drive standard
+;	ibm-compatible 8" disks
+;
+;	disk Parameter header for disk 00
+dpbase:	dw	0h, 0000h
+		dw	0000h, 0000h
+		dw	dirbf, dpblk
+		dw	chk00, all00
+;	disk parameter header for disk 01
+		dw	0h, 0000h
+		dw	0000h, 0000h
+		dw	dirbf, dpblk
+		dw	chk01, all01
+;	disk parameter header for disk 02
+		dw	0h, 0000h
+		dw	0000h, 0000h
+		dw	dirbf, dpblk
+		dw	chk02, all02
+;	disk parameter header for disk 03
+		dw	0h, 0000h
+		dw	0000h, 0000h
+		dw	dirbf, dpblk
+		dw	chk03, all03
+
+;
+; SORD M23 1DD 80 track, 256 byte/sector, 16 sector, 1 side, 2048 byte/data block
+;
+;
+dpblk:	;DISK PARM BLOCK
+		DW	32		;SEC PER TRACK(by CP/M logical sector(128byte))
+		DB	4		;BLOCK SHIFT
+		DB	15		;BLOCK MASK
+		DB	1		;EXTNT MASK
+		DW	155		;DISK SIZE-1
+		DW	63		;DIRECTORY MAX
+		DB	128		;ALLOC0
+		DB	0		;ALLOC1
+		DW	16		;CHECK SIZE
+		DW	2		;OFFSET
+;
+;	end of fixed tables
+;
+
+;	individual subroutines to perform each function
+boot:	;simplest case is to just perform parameter initialization
+		XOR	A	;zero in the accum
+		LD	(iobyte),A	;clear the iobyte
+		LD	(cdisk),A	;select disk zero
+		LD	(hstact),A	;host buffer inactive
+		LD	(unacnt),A	;clear unalloc count
+;
+		CALL CRT_INIT	; CRT初期化
+		CALL FDC_INIT	; FDC初期化
+		CALL KBD_INIT	; キーボード初期化
+;
+		PUSH AF
+		PUSH HL
+		LD HL,OPENMSG
+		CALL STROUT
+		POP HL
+		POP AF
+
+		; CALL CTC_INIT	; CTC初期化
+
+
+		JP	gocpm	;initialize and go to cp/m
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; worm boot process
+;
+
+wboot:	;simplest case is to read the disk until all sectors loaded
+
+		; WBOOTでは、CPPとBDOSをディスクから再ロードする。
+		; BIOSはロードしない（すると壊れる）。
+
+		LD	SP, 80h	;use space below buffer for stack
+		LD	C, 0	;select disk 0
+		CALL	seldsk
+
+
+		; FDC initialize
+		LD A,51H
+		LD (FDC_CONTROL_REG),A
+
+		; DMA Bank Selectを0に設定
+		XOR A ; A=0
+		OUT (DMA_BANK_SEL), A
+
+		; DMAの転送アドレスを58k memory modelにおけるccpのアドレス(CC00H)にセットする。
+
+		LD A,0CCH ; CC00Hは58K memory model
+		LD (WBOOT_ADDRESS_H),A
+		LD A,00H
+		LD (WBOOT_ADDRESS_L),A
+		;
+		; 1st READ
+		; 現在は、トラック22、セクタ9～16からトラック23、セクタ1～14という
+		; 中途半端な位置にCPM.SYSを配置している。
+		LD E,22 ; TARGET TRACK is No.22
+DO_SEEK_WBOOT0:
+		CALL SEEK
+		JR Z,GO_DMA_WBOOT0
+		JR DO_SEEK_WBOOT0
+GO_DMA_WBOOT0:
+		LD B,08 ; LOOP COUNT is 8 sectors
+		LD C,09 ; INITIAL SECTOR NO. is 9 to 16 sector reading
+;
+READ_LOOP_WBOOT0:
+		CALL GO_DMA_AND_READ_WBOOT0
+		INC C
+		LD A,(WBOOT_ADDRESS_H) ; memory address of DMA transfer address
+		INC A ; 256 byte incriment
+		LD (WBOOT_ADDRESS_H),A
+		DJNZ READ_LOOP_WBOOT0
+
+		;
+		; 2nd READ
+		;
+		LD E,23  ; TARGET TRACK No.23
+DO_SEEK_WBOOT1:
+		CALL SEEK
+		JR Z,GO_DMA_WBOOT1
+		JR DO_SEEK_WBOOT1
+GO_DMA_WBOOT1:
+		LD B,014 ; LOOP COUNT is 14 sectors
+		LD C,01 ; INITIAL SECTOR NO. is 1 to 14 sector reading
+;
+READ_LOOP_WBOOT1:
+		CALL GO_DMA_AND_READ_WBOOT0
+		INC C
+		LD A,(WBOOT_ADDRESS_H) ; memory address of DMA transfer address
+		INC A ; 256 byte incriment
+		LD (WBOOT_ADDRESS_H),A
+		DJNZ READ_LOOP_WBOOT1
+
+		JP gocpm ; CP/Mを再起動
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; cpm go
+;
+
+gocpm:
+		LD	A, 0c3h	;c3 is a jmp instruction
+		LD	(0),A	;for jmp to wboot
+		LD	HL, wboote	;wboot entry point
+		LD	(1),HL	;set address field for jmp at 0
+;
+		LD	(5),A	;for jmp to bdos
+		LD	HL, bdos	;bdos entry point
+		LD	(6),HL	;address field of Jump at 5 to bdos
+;
+		LD	BC, 80h	;default dma address is 80h
+		CALL	setdma
+		EI	;enable the interrupt system
+		LD	A,(cdisk)	;get current disk number
+		LD	C, A	;send to the ccp
+		JP	ccp	;go to cp/m for further processing
+;
+;
+;	simple i/o handlers (must be filled in by user)
+;	in each case, the entry point is provided, with space reserved
+;	to insert your own code
+;
+const:	;console status, return 0ffh if character ready, 00h if not
+		LD A,0H ; no character ready
+		RET
+;
+conin:	;console character into register a
+		PUSH DE
+		PUSH IX
+		CALL KEY_SCAN_WRAPPER
+		POP IX
+		POP DE
+		RET
+;
+conout:	;console character output from register c
+		DI		;[[[[disable interrupts 20251230]]]]
+		PUSH AF
+		PUSH BC
+		PUSH DE
+		PUSH HL
+		LD A,C
+		CALL PUTCHAR
+		POP HL
+		POP DE
+		POP BC
+		POP AF
+		EI		;[[[[enable interrupts 20251230]]]]
+		RET
+;
+list:	;list character from register c
+		LD	A, C	;character to register a
+		RET	;null subroutine
+;
+listst:	;return list status (0 if not ready, 1 if ready)
+		XOR	A	;0 is always ok to return
+		RET
+;
+punch:	;punch	character from	register C
+		LD	A, C	;character to register a
+		RET	;null subroutine
+;
+;
+reader:	;reader character into register a from reader device
+		LD	A, 1ah	;enter end of file for now (replace later)
+		AND	7fh	;remember to strip parity bit
+		RET
+;
+;
+;	i/o drivers for the disk follow
+;	for now, we will simply store the parameters away for use
+;	in the read and write	subroutines
+;
+home:	;move to the track 00	position of current drive
+;	translate this call into a settrk call with Parameter 00
+		LD	A,(hstwrt)	;check for pending write
+		OR	A
+		JP	NZ,homed
+		LD	(hstact),A	;clear host active flag
+homed:
+		RET	;we will move to 00 on first read/write
+;
+seldsk:	;select disk given by register c
+		LD	HL, 0000h	;error return code
+		LD	A, C
+		LD	(sekdsk),A
+		CP	4	;must be between 0 and 3
+		RET	NC	;no carry if 4, 5,...
+;	disk number is in the proper range
+;		DS	10	;space for disk select
+;		LD 
+;	compute proper disk Parameter header address
+		LD	A,(diskno)
+		LD	L, A	;l=disk number 0, 1, 2, 3
+		LD	H, 0	;high order zero
+		ADD	HL,HL	;*2
+		ADD	HL,HL	;*4
+		ADD	HL,HL	;*8
+		ADD	HL,HL	;*16 (size of each header)
+		LD	DE, dpbase ;base of parm block
+		ADD	HL,DE	;hl=,dpbase (diskno*16)(curdsk)
+		RET
+;
+settrk:
+	;set track given by registers BC
+		LD	H,B
+		LD	L,C
+		LD	(sektrk),HL	;track to seek
+		RET
+;
+setsec:	;set sector given by register c
+		LD	A, C
+		LD	(seksec),A
+		RET
+;
+;
+sectran:
+	;translate the sector given by bc using the
+	;translate table given by de
+	;translate sector number BC
+		LD	H,B
+		LD	L,C
+		RET
+
+;
+setdma:	;set	dma address given by registers b and c
+		LD	L, C	;low order address
+		LD	H, B	;high order address
+		LD	(dmaadr),HL	;save the address
+		RET
+;
+;
+;*****************************************************
+;*                                                   *
+;*	The READ entry point takes the place of      *
+;*	the previous BIOS defintion for READ.        *
+;*                                                   *
+;*****************************************************
+read:	;perform read operation (usually this is similar to write
+;	so we will allow space to set up read command, then use
+;	common code in write)
+	;read the selected CP/M sector
+		XOR	A
+		LD	(unacnt),A
+		LD	A,1
+		LD	(readop),A	;read operation
+		LD	(rsflag),A	;must read data
+		LD	A,wrual
+		LD	(wrtype),A	;treat as unalloc
+		JP	rwoper	;to perform the read
+;
+;
+;
+;*****************************************************
+;*                                                   *
+;*	The WRITE entry point takes the place of     *
+;*	the previous BIOS defintion for WRITE.       *
+;*                                                   *
+;*****************************************************
+write:
+	;write the selected CP/M sector
+		XOR	A	;0 to accumulator
+		LD	(readop),A	;not a read operation
+		LD	A,C	;write type in c
+		LD	(wrtype),A
+		CP	wrual	;write unallocated?
+		JP	NZ,chkuna	;check for unalloc
+;
+;	write to unallocated, set parameters
+		LD	A,blksiz/128	;next unalloc recs
+		LD	(unacnt),A
+		LD	A,(sekdsk)	;disk to seek
+		LD	(unadsk),A	;unadsk = sekdsk
+		LD	HL,(sektrk)
+		LD	(unatrk),HL	;unatrk = sectrk
+		LD	A,(seksec)
+		LD	(unasec),A	;unasec = seksec
+;
+chkuna:
+	;check for write to unallocated sector
+		LD	A,(unacnt)	;any unalloc remain?
+		OR	A
+		JP	Z,alloc	;skip if not
+;
+;	more unallocated records remain
+		DEC	A	;unacnt = unacnt-1
+		LD	(unacnt),A
+		LD	A,(sekdsk)	;same disk?
+		LD	HL,unadsk
+		CP	(HL)	;sekdsk = unadsk?
+		JP	NZ,alloc	;skip if not
+;
+;	disks are the same
+		LD	HL,unatrk
+		CALL	sektrkcmp	;sektrk = unatrk?
+		JP	NZ,alloc	;skip if not
+;
+;	tracks are the same
+		LD	A,(seksec)	;same sector?
+		LD	HL,unasec
+		CP	(HL)	;seksec = unasec?
+		JP	NZ,alloc	;skip if not
+;
+;	match, move to next sector for future ref
+		INC	(HL)	;unasec = unasec+1
+		LD	A,(HL)	;end of track?
+		CP	cpmspt	;count CP/M sectors
+		JP	C,noovf	;skip if no overflow
+;
+;	overflow to next track
+		LD	(HL),0	;unasec = 0
+		LD	HL,(unatrk)
+		INC	HL
+		LD	(unatrk),HL	;unatrk = unatrk+1
+;
+noovf:
+	;match found, mark as unnecessary read
+		XOR	A	;0 to accumulator
+		LD	(rsflag),A	;rsflag = 0
+		JP	rwoper	;to perform the write
+;
+alloc:
+	;not an unallocated record, requires pre-read
+		XOR	A	;0 to accum
+		LD	(unacnt),A	;unacnt = 0
+		INC	A	;1 to accum
+		LD	(rsflag),A	;rsflag = 1
+;
+
+;******************************************************
+;*                                                    *
+;*	Common code for READ and WRITE follows            *
+;*  Modified Interrupt Handling 20251230 by tsunozemi *
+;******************************************************
+rwoper:
+	;enter here to perform the read/write
+		XOR	A	;zero to accum
+		LD	(erflag),A	;no errors (yet)
+		LD	A,(seksec)	;compute host sector
+		OR	A	;carry = 0
+		RRA		;shift right
+		LD	(sekhst),A	;host sector to seek ; sekhst = seksec/2
+;
+;	active host sector?
+		LD	HL,hstact	;host active flag
+		LD	A,(HL)
+		LD	(HL),1	;always becomes 1
+		OR	A		;was it already?
+		JP	Z,filhst	;fill host if not
+;
+;	host buffer active, same as seek buffer?
+		LD	A,(sekdsk)
+		LD	HL,hstdsk	;same disk?
+		CP	(HL)		;sekdsk = hstdsk?
+		JP	NZ,nomatch
+;
+;	same disk, same track?
+		LD	HL,hsttrk
+		CALL sektrkcmp	;sektrk = hsttrk?
+		JP	NZ,nomatch
+;
+;	same disk, same track, same buffer?
+		LD	A,(sekhst)
+		LD	HL,hstsec	;sekhst = hstsec?
+		CP	(HL)
+		JP	Z,match	;skip if match
+;
+nomatch:
+	;proper disk, but not correct sector
+		LD	A,(hstwrt)		;host written?
+		OR	A
+		CALL NZ,writehst	;clear host buff
+;
+filhst:
+	;may have to fill the host buffer
+		LD	A,(sekdsk)
+		LD	(hstdsk),A
+		LD	HL,(sektrk)
+		LD	(hsttrk),HL
+		LD	A,(sekhst) ; sekhst -> hstsec
+		LD	(hstsec),A
+		LD	A,(rsflag)	;need to read?
+		OR	A
+		CALL NZ,readhst	;yes, if 1
+		XOR	A			;0 to accum
+		LD	(hstwrt),A	;no pending write
+;
+match:
+	;copy data to or from buffer
+		LD	A,(seksec)	;mask buffer number
+		AND	secmsk		;least signif bits
+		LD	L,A			;ready to shift
+		LD	H,0			;double count
+		ADD	HL,HL
+		ADD	HL,HL
+		ADD	HL,HL
+		ADD	HL,HL
+		ADD	HL,HL
+		ADD	HL,HL
+		ADD	HL,HL
+;	hl has relative host buffer address
+		LD	DE,hstbuf
+		ADD	HL,DE		;hl = host address
+		EX	DE,HL		;now in DE
+		LD	HL,(dmaadr)	;get/put CP/M data
+		LD	C,80H		;length of move
+		LD	A,(readop)	;which way?
+		OR	A
+		JP	NZ,rwmove	;skip if read
+;
+;	write operation, mark and switch direction
+		LD	A,1
+		LD	(hstwrt),A	;hstwrt = 1
+		EX	DE,HL	;source/dest swap
+;
+rwmove:
+	;C initially 128(80H), DE is source, HL is dest
+		LD	A,(DE)	;source character
+		INC	DE
+		LD	(HL),A	;to dest
+		INC	HL
+		DEC	C		;loop 128 times
+		JP	NZ,rwmove
+;
+;	data has been moved to/from host buffer
+		LD	A,(wrtype)	;write type
+		CP	wrdir		;to directory?
+		LD	A,(erflag)	;in case of errors
+		RET	NZ			;no further processing
+;
+;	clear host buffer for directory write
+		OR	A	;errors?
+		RET	NZ	;skip if so
+		XOR	A	;0 to accum
+		LD	(hstwrt),A	;buffer written
+		CALL	writehst
+		LD	A,(erflag)
+		RET
+;
+;
+;*****************************************************
+;*                                                   *
+;*	Utility subroutine for 16-bit compare        *
+;*                                                   *
+;*****************************************************
+sektrkcmp:
+	;HL = .unatrk or .hsttrk, compare with sektrk
+		EX	DE,HL
+		LD	HL,sektrk
+		LD	A,(DE)	;low byte compare
+		CP	(HL)	;same?
+		RET	NZ	;return if not
+;	low bytes equal, test high 1s
+		INC	DE
+		INC	HL
+		LD	A,(DE)
+		CP	(HL)	;sets flags
+		RET
+;
+;
+;*****************************************************
+;*                                                   *
+;*	WRITEHST performs the physical write to      *
+;*	the host disk, READHST reads the physical    *
+;*	disk.					     *
+;*                                                   *
+;*****************************************************
+writehst:
+	;hstdsk = host disk #, hsttrk = host track #,
+	;hstsec = host sect #. write "hstsiz" bytes
+	;from hstbuf and return error flag in erflag.
+	;return erflag non-zero if error
+
+		DI		;[[[[disable interrupts 20251230]]]]
+
+		LD A,(hsttrk)
+		LD E,A ; E is Track No.
+		CALL SEEK
+		LD A,(hstsec)
+		ADD A,01H
+		LD C,A ; C is Sector No.
+		CALL GO_DMA_AND_WRITE0
+		LD (erflag),A
+
+		EI		;[[[[enable interrupts 20251230]]]]
+
+		RET
+;
+readhst:
+	;hstdsk = host disk #, hsttrk = host track #,
+	;hstsec = host sect #. read "hstsiz" bytes
+	;into hstbuf and return error flag in erflag.
+
+		DI		;[[[[disable interrupts 20251230]]]]
+
+		LD A,(hsttrk)
+		LD E,A ; E is Track No.
+		CALL SEEK
+		LD A,(hstsec)
+		ADD A,01H
+		LD C,A ; C is Sector No.
+		CALL GO_DMA_AND_READ0
+		LD (erflag),A
+
+		EI		;[[[[enable interrupts 20251230]]]]
+
+		RET
+;
+; FDC COMMAND OUT subroutine
+;
+FDCOUT:
+	OUT (FDC_COMMAND_REG),A
+	LD A,30H
+WLOOP: DEC A
+	JR NZ,WLOOP
+LOOP2:
+	IN A,(FDC_STATUS_REG)
+	BIT 0H,A ; BUSY IS CLEAR?
+	JR NZ,LOOP2
+	RET
+;
+; RESTORE subroutine
+;
+RESTORE:
+RESTORE_LOOP:
+	LD A,0BH ; restore command. 15ms, Head load, Verify OFF
+	CALL FDCOUT
+	BIT 7,A ; Not Ready?
+	JR NZ,RESTORE_LOOP
+	AND 98H
+	JR NZ,RESTORE
+	RET
+;
+; SEEK subroutine
+; E is Track No.
+;
+SEEK:
+	LD A,E ; E is Track No.
+	OUT (FDC_DATA_REG),A
+	LD A,1BH  ; seek command. 15ms, Head Load, Verify OFF
+	CALL FDCOUT
+	AND 98H
+	RET
+;
+; DMA setting & Go
+; HL is Address of DMA Command chain
+;		but top value is No of DMA Command chain
+DMA_ON:
+	PUSH HL
+	PUSH BC
+	LD B,(HL)
+	INC HL
+	LD C,DMA_ADDRESS
+	OTIR
+	POP BC
+	POP HL
+	RET
+;
+; DMA setting & FDD read FOR SIDE 0
+; C is Sector No.
+;
+GO_DMA_AND_READ0:
+	LD A,C
+	OUT (FDC_SECTOR_REG),A
+READ0_RETRY:
+	LD HL,DMA_COMMANDS
+	CALL DMA_ON
+	LD A,80H ; READ DATA COMMAND for Side 0
+DO_FDC0:
+	CALL FDCOUT
+
+	PUSH AF
+	LD A,83H
+	OUT (DMA_ADDRESS),A
+	POP AF
+
+	AND 03CH
+	JR Z, READ0_SUCCESS
+	JR READ0_RETRY
+READ0_SUCCESS:
+	RET
+;
+; DMA setting & FDD write FOR SIDE 0
+; C is Sector No.
+;
+GO_DMA_AND_WRITE0:
+	LD A,C
+	OUT (FDC_SECTOR_REG),A
+	LD HL,DMA_WRITE_COMMANDS
+	CALL DMA_ON
+	LD A,0A0H ; WRITE DATA COMMAND for Side 0
+DO_FDC_WR0:
+	CALL FDCOUT
+	AND 0FCH
+	RET
+;
+; DMA setting & FDD read FOR WBOOT at SIDE 0
+; C is Sector No.
+;
+GO_DMA_AND_READ_WBOOT0:
+	LD A,C
+	OUT (FDC_SECTOR_REG),A
+	LD HL,DMA_WBOOT_COMMANDS
+	CALL DMA_ON
+	LD A,80H ; READ DATA COMMAND for Side 0
+	CALL FDCOUT
+	AND 03CH
+	RET
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; SORD M23用CRTコントロールドライバ、キーボードドライバ
+;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; FDC 初期化ルーチン
+;
+FDC_INIT:
+	LD A,51H
+	LD (FDC_CONTROL_REG),A
+	RET
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; キーボード初期化ルーチン
+;
+KBD_INIT:
+;
+; キーボードスキャンバッファーを0で埋める。必要ないかも。
+;
+	LD HL,KEYBOARD_SCAN_BUFFER
+	LD BC,10H
+	LD A,0H
+	LD (HL),A
+	LD D,H
+	LD E,L
+	INC DE
+	DEC BC
+	LD A,B
+	OR C
+	RET Z
+	LDIR
+	RET
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; CRT 初期化ルーチン
+;
+
+CRT_INIT:
+
+	LD HL,0F000H ; VRAMの左上のアトリビュートアドレス
+	LD BC,0800H
+
+; カーソル座標を00Hに設定する。
+; 注：画面左上がカーソル座標では0000Hになる。VRAMにおけるテキスト画面左上(F800H)ではないことに注意。
+	LD A,0EH ; R14 (cursor H)
+	OUT (CRTC_ADD),A
+	LD A,0H
+	OUT (CRTC_VAL),A
+	LD A,0FH ; R15 (cursor L)
+	OUT (CRTC_ADD),A
+	LD A,00H
+	OUT (CRTC_VAL),A
+
+; カーソルの形状と点滅の設定
+	LD A,0AH ; R10 (cursol start address)
+	OUT (CRTC_ADD),A
+;	LD A,C0H ; 点滅、豆腐カーソル
+	LD A,C7H ; 点滅、アンスコカーソル
+;	LD A,0H ; 表示せず。
+	OUT (CRTC_VAL),A
+	LD A,0BH ; R11 (cursol end address)
+	OUT (CRTC_ADD),A
+	LD A,0AH
+;	LD A,0H ; 表示せず。
+	OUT (CRTC_VAL),A
+
+;
+; 	一度画面全てを消す(スペースで埋める)。
+;
+	LD B,050H
+	LD DE,0FFFFH
+	LD A,20H ; 20Hはアスキーコードでスペース
+CLEAR_ALL_LINE:
+	OUT (0D2H),A ; D2Hポートになにか書くと次の命令は別のページ(この場合はVRAMのページ)に行う。
+	LD (HL),A ; F000H～FFFFHまで20Hで埋めている。アトリビュートに20H書いても問題ないみたい。
+	INC HL
+	SBC HL,DE
+	JR NZ,CLEAR_ALL_LINE
+
+	LD DE, VRAM_TXT_TOP ; 最初の文字列表示位置(左上隅)
+	LD (CURSOL_LOCATE),DE
+	LD (TOP_VIEW),DE
+	LD DE, 0FFD0H
+	LD (NEED_DO_SCROLL_POINT),DE
+
+	RET ; 初期化処理終了
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; CRTCコントロールサブルーチン群
+;
+
+;
+; VRAM_TXT_TOP : VRAMテキストエリアの先頭(F800H)
+; CURSOL_LOCATE : 現在のカーソル位置
+; CR_NOW_CURSOL_LOCATE : CRコードが入った時のカーソル位置
+; TOP_VIEW : 画面左上端のアドレス(スクロールによって動的に変化する)
+; CR_BASE_ADDRESS : CR後のカーソル位置
+; CR_NEW_ORIGIN : FFFFHの境界を越え、更に画面右端を超えた時にCRアドレス計算の原点になるアドレス
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; １文字表示サブルーチン
+; A regに表示するアスキーコードが入っている。
+;
+
+PUTCHAR:
+	AND A
+	JR Z, PUTCHAR_RET ; NULL文字なら何もしないで戻る
+	LD DE,(CURSOL_LOCATE) ; 現在のカーソル位置をDEにロード
+	CP CR ; キャリッジリターンか？
+	JP Z, DO_CR ; CRの処理
+	CP LF ; ラインフィードか？
+	JP Z, DO_LF ; LFの処理
+	CP BS ; バックスペースか？
+	JP Z, DO_BS ; BSの処理
+	CP HT ; タブか？
+	JP Z, DO_HT ; HTの処理
+	CP ESC ; エスケープか？
+	JP Z, DO_ESC ; ESCの処理
+
+; 通常文字の表示処理
+DO_NORMAL:
+	OUT (0D2H),A ; access to RAM page 1
+	LD (DE),A ; put character
+;
+; 越境判定。FFFFHの次はF800Hになる
+;
+	PUSH AF
+	LD A,D ; DEの上位バイト
+	CP 0FFH
+	JR NZ,CURSOR_BOUNDARY_END ; オーバーフローしていなければジャンプ
+	LD A,E ; DEの下位バイト
+	CP 0FFH
+	JR NZ,CURSOR_BOUNDARY_END ; オーバーフローしていなければジャンプ
+	LD DE, VRAM_TXT_TOP-1	  ; 現在のカーソル位置 = F800H - 1 
+CURSOR_BOUNDARY_END:
+	POP AF
+	INC DE ; カーソル位置を1つ進める
+DO_CR_LF_BS_RETURN: ; CR,LF,BSの処理で戻ってくる
+	PUSH HL
+	PUSH AF
+	PUSH DE
+	CALL DO_SCROLL ; 1行スクロール処理
+	POP DE
+	POP AF
+	POP HL
+	LD (CURSOL_LOCATE),DE ; 現在のカーソル位置を更新。
+	CALL PRINT_CURSOL ; カーソル表示
+	CALL CALC_CURSOL_XY ; カーソルのX,Y座標計算
+PUTCHAR_RET:
+	RET
+
+;
+; カーソルをCURSOL_LOCATE=DEの位置に表示する(HD46505Sの機能)
+;
+PRINT_CURSOL:
+	PUSH AF
+	PUSH DE
+	PUSH HL
+	EX DE,HL ; HL=CURSOL_LOCATE
+	LD A,0EH ; R14 (cursor H)
+	OUT (CRTC_ADD),A
+	LD A,H
+	OUT (CRTC_VAL),A ; カーソルの上位アドレス設定
+	LD A,0FH ; R15 (cursor L)
+	OUT (CRTC_ADD),A
+	LD A,L
+	OUT (CRTC_VAL),A ; カーソルの下位アドレス設定
+	POP HL
+	POP DE
+	POP AF
+	RET
+
+;
+; CURSOL_LOCATE=DEから、カーソルのX,Y座標を計算して、特定のメモリ領域に保存する。
+;
+CALC_CURSOL_XY:
+	PUSH AF
+	PUSH BC
+	PUSH DE
+	PUSH HL
+	LD HL,VRAM_TXT_TOP ; 画面左上端アドレスをHLにロード
+	EX DE,HL ; DEとHLを交換。HL=CURSOL_LOCATE, DE=VRAM_TXT_TOP
+	SBC HL,DE ; HL = CURSOL_LOCATE - VRAM_TXT_TOP
+	OR A ; フラグをクリア
+	LD BC,0 ; B=Y座標カウンタ初期化
+Y_CALC_LOOP:
+	LD DE,WIDTH_SCREEN ; 50H = 画面の桁数(80d)
+	SBC HL,DE ;	HL - 50H
+	JR C,Y_CALC_END ; HLが負ならループ終了
+	INC B ; Y座標カウンタをインクリメント
+	JR Y_CALC_LOOP
+Y_CALC_END:
+	ADD HL,DE ; 余り復元（これがX座標）
+    LD A,B
+    LD (CURSOL_XY_ADDR),A   ; Y座標保存
+    LD A,L
+    LD (CURSOL_XY_ADDR+2),A   ; X座標保存
+	POP HL
+	POP DE
+	POP BC
+	POP AF
+	RET
+
+;
+; 
+;
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; CR処理ルーチン(スクロール処理対応版)
+;
+
+DO_CR:
+	PUSH HL
+	PUSH BC
+	XOR A ; A=0にする
+	LD (CR_NOW_CURSOL_LOCATE),DE ; 現在のカーソル位置保存
+	LD HL,(TOP_VIEW) ; 左上端をロード
+	EX DE,HL
+	SBC HL,DE ; 左上端アドレス - 現在のカーソル位置
+	JR NC,CONTINUE_CR ; オーバーフローしていないなら単純処理
+;
+;   TOP_VIEWがCR_NOW_CURSOL_LOCATEよりも大きいとき。
+;	この状況は、スクロールされた時に発生する。
+;	つまり、殆どの場合、この処理が実行される。
+;
+	LD HL,(TOP_VIEW)
+	LD DE,(CR_NOW_CURSOL_LOCATE) ; CRコードが入った時のカーソル位置
+	LD BC,WIDTH_SCREEN ;  50H =  画面の桁数(80d)
+	LD (CR_BASE_ADDRESS),HL ; 初期値は左上端アドレス
+CR_SCAN_0:
+	LD HL,(CR_BASE_ADDRESS)
+	LD (CR_BASE_ADDRESS_PRE),HL
+	ADD HL,BC ; 50H(80d)づつ足していく
+	LD (CR_BASE_ADDRESS),HL
+	JP NC,CR_SCAN_0 	; 越境をチェックしている。
+						; オーバーフローまでループする。
+	LD HL,(CR_BASE_ADDRESS_PRE) ; ループを抜けたときHLはオーバーフロー後の値になっている。
+								; 足し算前の値に戻す
+	; FFFFHを超えた値がいくつかを調べる。
+	; FFFFHまでの値と合わせて、それが1行の桁数50H(80d)を
+	; 超えたなら、CR後の現在カーソル位置は
+	; その新しい行の先頭アドレスにならなくてはならない。
+	; 
+	LD DE,0FFFFH ; 境界値
+	EX DE,HL
+	SBC HL,DE ; FFFFH - CR_BASE_ADDRESS_PRE = A
+			  ; オーバーフローする一つ前の値でFFFFHを引く
+	LD DE,WIDTH_SCREEN ; 50H(80d)
+	EX DE,HL
+	SBC HL,DE ; 50H(80d) - A = X ; Xは境界を越えた数
+	LD DE,VRAM_TXT_TOP ; VRAM_TXT_TOP = F800H
+	ADD HL,DE ; F800H + X ; この値が境界を含む行の右端のアドレス
+	DEC HL 	; -1する
+	DEC HL 	; この引き算二回の処理がないと正しい左端のアドレスが出ない。
+			; これはCP/Mでは常にプロンプト(a>)の2文字が出ているため。
+	LD (CR_NEW_ORIGIN),HL ; 新しいCR評価位置になる
+	LD (CR_BASE_ADDRESS),HL ; CR_BASE_ADDRESSに新しい値を入れる
+	LD DE,(CR_NOW_CURSOL_LOCATE) ; CR命令を受けた時のカーソル位置
+
+	;
+	; 例えば現在カーソル位置がF819Hで新しいCR評価位置がF820Hのときに、
+	; CR_2_NEW_SCAN_0のループを通ると+50Hされてしまうので、バイパスする処理。
+	SBC HL,DE ; (CR_NEW_ORIGIN) > CR_NOW_CURSOL_LOCATE ?
+	JP P,CR_BOUNDARY_RETURN ; 正であれば、ジャンプ
+	;
+	;
+	LD HL,(CR_NEW_ORIGIN) ; 負であれば、そのまま処理を進める。
+	LD BC,WIDTH_SCREEN ;  50H(80d)
+CR_NEW_SCAN_0:
+	LD HL,(CR_BASE_ADDRESS)
+	LD (CR_BASE_ADDRESS_PRE),HL ; HL=CR_NEW_ORIGIN
+	ADD HL,BC ; CR_NEW_ORIGIN + 50H +...
+	LD (CR_BASE_ADDRESS),HL
+	SBC HL,DE ; (CR_NEW_ORIGIN + 50H +...) > CR_NOW_CURSOL_LOCATE ?
+	JP M, CR_NEW_SCAN_0 ; DEの方が大きければループ
+	JP Z, CR_NEW_SCAN_0 ; 完全に一致したときも1回ループを回す
+	LD HL,(CR_BASE_ADDRESS_PRE) ; HL>DE。50Hを足す一つ前の値をHLに入れる。
+	LD (CR_BASE_ADDRESS),HL
+	LD DE,(CR_BASE_ADDRESS) ; CR後のアドレスをDEに入れる。
+	JR CR_END
+;
+;	TOP_VIEWがCR_NOW_CURSOL_LOCATEよりも小さいとき
+;
+CONTINUE_CR:
+	LD HL,(TOP_VIEW)
+	LD DE,(CR_NOW_CURSOL_LOCATE)
+	LD BC,WIDTH_SCREEN ; 50H(80d) 
+	LD (CR_BASE_ADDRESS),HL
+CR_SCAN_1:
+	LD HL,(CR_BASE_ADDRESS)
+	LD (CR_BASE_ADDRESS_PRE),HL
+	ADD HL,BC ; 50H(80d)づつ足していく
+	LD (CR_BASE_ADDRESS),HL
+	SBC HL,DE	; HLが現在のカーソル位置を超えるかチェック
+	JP M,CR_SCAN_1 ; 超えていなければループ
+	JP Z,CR_SCAN_1 ; 完全に一致したときも1回ループを回す。
+	LD HL,(CR_BASE_ADDRESS_PRE) ; HLが現在のカーソル位置を超えたので、1つ前の値に戻す
+	LD (CR_BASE_ADDRESS),HL
+	LD DE,(CR_BASE_ADDRESS)
+CR_END:
+	POP BC
+	POP HL
+	JP DO_CR_LF_BS_RETURN; CR,LF,BSの処理の終了
+
+CR_BOUNDARY_RETURN:
+	LD DE,(CR_BASE_ADDRESS_PRE) ; DEに現在のカーソル位置を超える前の値(CR_BASE_ADDRESS_PRE)を戻す
+	JR CR_END
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; LINE_FEED 処理(スクロール処理対応版)
+;
+
+DO_LF:
+	PUSH HL
+	PUSH BC
+	EX DE,HL ; HL <-> DE DE=現在のカーソル位置
+	LD BC,WIDTH_SCREEN ; 50H(80d)
+	ADD HL,BC ; HL = DE + 50H
+	JR NC,CONTINUE_LF ; オーバーフローしていなければジャンプ
+;
+;	BEYOND FFFFH BOUNDARY
+;
+	LD HL,(CURSOL_LOCATE)
+	LD DE,0FFFFH
+	EX DE,HL ; HL - CURSOL_LOCATE
+	SBC HL,DE ; FFFFH - CURSOL_LOCATE = A
+	LD DE,50H ; 50H(80d)
+	EX DE,HL ; DE - A
+	SBC HL,DE ; 50H - A = X
+;
+	DEC HL ; この引き算二回の処理がないと正しい左端のアドレスが出ない。
+	DEC HL ; これはCP/Mでは常にプロンプト(a>)の2文字が出ているため。
+;
+	LD DE,VRAM_TXT_TOP
+	ADD HL,DE
+CONTINUE_LF:
+	EX DE,HL ; DE <-> HL
+	POP BC
+	POP HL
+	JP DO_CR_LF_BS_RETURN
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; BACK SPACE 処理
+;
+DO_BS:
+	LD A, 20H ; 20H -> Space ASCII CODE
+	DEC DE ; カーソル位置を1つ戻す
+	OUT (0D2H),A ; access to RAM page 1
+	LD (DE),A ; 20H(スペース)を表示させる。
+	JP DO_CR_LF_BS_RETURN ; BSの為の復帰点に戻る。
+
+;
+; Horizontal Tab
+;
+DO_HT:
+	PUSH AF
+	PUSH HL
+	PUSH BC
+
+	; PUTCHARルーチンを4回呼び出してスペースを表示させる。
+	LD A,20H ; 20H is Space CODE
+	LD B,04H	; 4回ループ
+HT_LOOP:
+		PUSH AF
+		CALL PUTCHAR
+		POP AF
+		DEC B
+		JR NZ, HT_LOOP
+	POP BC
+	POP HL
+	POP AF
+	RET
+
+DO_VT:
+	RET
+
+DO_NP:
+	RET
+
+DO_ESC:
+	RET
+
+DO_BEL:
+	RET
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; スクロール処理
+; SORD M23のCRTCであるHD4650SPはスクロール機能がある。
+; 具体的には表示したい画面左上端のアドレスを、R12、R13に上位、下位アドレスとして入れることで実行される。
+; SORD M23のVRAMのテキストエリアはF800H～FFFFHであるが、画面に表示される文字は80桁×25行の2000(7D0H)文字である。
+; よって、余りが生じるため、スクロール処理は殆どがこの余りの処理に費やされる。
+;
+
+DO_SCROLL:
+	LD (CURSOL_LOCATE),DE ; 現在のカーソル位置を更新
+	LD HL,(TOP_VIEW) ; 左上端アドレス
+	LD DE,7D0H ; 全画面文字数
+	ADD HL,DE ; TOP_VIEW + 7D0H ; 
+	JR C,SCROLL_POINT_BEYOND_FFFF ; 境界値をまたいでいる、オーバーフローしたらジャンプ
+	JR SCROLL_POINT ; スクロールすべきカーソル位置の更新へ
+SCROLL_POINT_BEYOND_FFFF:
+	LD HL,(TOP_VIEW)
+	LD DE,0FFFFH
+	EX DE,HL ; HL - TOP_VIEW
+	SBC HL,DE ; FFFFH - TOP_VIEW = A
+	LD DE,7CEH ; 7D0H - 2H = 7CEH
+	EX DE,HL ; DE - A
+	SBC HL,DE ; 7CEH - A = X
+	LD DE,VRAM_TXT_TOP
+	ADD HL,DE ; X + F800H = 新しいTOP_VIEW
+	;
+SCROLL_POINT:
+	; update need_do_scroll_point
+	LD (NEED_DO_SCROLL_POINT),HL ; need_do_scroll_point = 新しいTOP_VIEW
+	LD DE,(CURSOL_LOCATE) ; 現在のカーソル位置
+	LD A,D ; need_do_scroll_point == CURSOL_LOCATE?
+	CP H
+	RET NZ
+	LD A,E ; need_do_scroll_point == CURSOL_LOCATE?
+	CP L
+	RET NZ ; スクロール不要なら終了
+;
+; TOP_VIEWの更新
+;
+
+; スクロールから外れた行をスペースで埋める。
+	LD HL,(TOP_VIEW) ; スクロール直前の左上端アドレス
+	PUSH BC
+	PUSH DE
+	PUSH AF
+	LD B,04FH ; 4FH=79d
+	LD DE,0FFFFH ; 境界値
+	LD A,20H ; 20H is Space CODE
+CLEAR_1_LINE:
+	OUT (0D2H),A
+	LD (HL),A ; スペースで埋める
+	PUSH HL ; HL < FFFFHのとき、下の引き算はオーバーフローするが、
+			; HL=F800Hの時に実行すると、HL=F801となり、
+			; その後INC HLでF802Hになるため、スペースによる穴埋めがF801Hのみ実行されないことになる。
+			; なので、一度、HLを退避して、引き算してFFFFHでないか判定したのち、POPして戻している。
+			; このコードは遅いが、現状、これを採用する。20221229
+	SBC HL,DE ; HL - FFFFH = HL
+	POP HL
+	JR Z, CLEAR_BEYOND_BOUNDARY ; HL = FFFFHのときは境界を越えた
+	INC HL
+	DJNZ CLEAR_1_LINE
+	JR CLEAR_1_LINE_END
+	; 越境時の処理
+CLEAR_BEYOND_BOUNDARY:
+	LD HL,VRAM_TXT_TOP ; HLをVRAMの先頭(F800H)にセット
+CLEAR_1_LINE_BOUNDARY: ; B回ループする
+	OUT (0D2H),A
+	LD (HL),A
+	INC HL
+	DJNZ CLEAR_1_LINE_BOUNDARY
+CLEAR_1_LINE_END:
+	POP AF
+	POP DE
+	POP BC
+;
+;
+	LD HL,(TOP_VIEW) ; TOP_VIEWの更新
+	LD DE,50H ; 50H=80d
+	ADD HL,DE ; TOP_VIEW + 50H
+	JR NC,UPDATE_TOP_VIEW
+;
+;	BEYOND FFFFH BOUNDARY
+;
+	LD DE,0FFFFH ; 境界値
+	LD HL,(TOP_VIEW) ; TOP_VIEW
+	EX DE,HL
+	SBC HL,DE ; FFFFH - TOP_VIEW = A
+	LD DE,50H ; 50H(80d)
+	EX DE,HL ; DE - A
+	SBC HL,DE ; 50H - A = X
+	LD DE,VRAM_TXT_TOP ; VRAM_TXT_TOP
+	ADD HL,DE ; F800H + X = TOP_VIEW
+;
+	DEC HL ; この引き算二回の処理がないと正しい左端のアドレスが出ない。
+	DEC HL ; これはCP/Mでは常にプロンプト(a>)の2文字が出ているため。
+;
+UPDATE_TOP_VIEW:
+	LD (TOP_VIEW),HL
+	;
+	; 1行スクロール
+	;
+	PUSH AF
+	LD A,0CH ; START ADDRESS HIGH
+	OUT (CRTC_ADD),A
+	LD A,H ; スクロールしたときに左隅になるVRAMの上位アドレス
+	OUT (CRTC_VAL),A
+	LD A,0DH ; START ADDRESS LOW
+	OUT (CRTC_ADD),A
+	LD A,L ; スクロールしたときに左隅になるVRAMの下位アドレス
+	OUT (CRTC_VAL),A
+	POP AF
+SCROLL_END:
+	RET
+
+
+
+;
+; 文字列表示ルーチン (末尾に0が出現するまで表示する)
+;
+
+STROUT:
+	LD	A,(HL)
+	AND	A
+	RET	Z
+	LD C,A
+	CALL	CONOUT
+	INC	HL
+	JR	STROUT
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; キースキャン サブルーチン
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+KEY_SCAN_WRAPPER:
+	PUSH HL
+	PUSH BC
+KEY_SCAN_WRAPPER_LOOP:
+	LD HL,PORT_INDEX
+	LD BC,0FDFH
+	CALL KEY_SCAN
+	AND A
+	JR Z,KEY_SCAN_WRAPPER_LOOP
+	POP BC
+	POP HL
+	RET
+
+KEY_SCAN:
+	INC C
+	INI ; INIでキーボードポートE0~EFをスキャンする。
+	JR NZ,KEY_SCAN ; Cをインクリメントしていくと、1->2->3...e->f->0となって、スキャン終了となる。
+	LD HL,PORT_INDEX ; キーボードポートの値が入っているメモリアドレスPORT_INDEX~PORT_INDEX+0xFHのポインタを先頭に戻している。
+	LD BC,0FDFH ; DJNZを使うので、B=0xf、C=0xDFにしている。Bがスキャン回数。Cがポート番号
+SCAN_LOOP:
+	INC C ; 初回の処理で、C=0xDF+1=0xE0となる。
+	IN A,(C)
+	AND (HL) ; INIでスキャンした結果と照合。
+	LD (HL),A ; 値を、INIで入れたアドレスと同じところに格納する。
+	INC HL ; メモリアドレスをインクリメント。
+	DJNZ SCAN_LOOP ; 16回繰り返す
+
+	LD HL,PORT_INDEX ; メモリアドレスポインタをPORT_INDEXの先頭に戻す。
+	LD D,0H ; インデックスを0にする。
+	JR KEY_LOOP_1
+SCAN_LOOP_RETURN:
+	RET
+
+KEY_LOOP_1:
+	LD A, (HL) ; メモリアドレスからキースキャンの値を取り出す。
+	AND A ; 0でないか、つまり、空の値でないかチェック。
+	JR NZ, KEY_LOOP_2 ; 空でない場合、つまり、何かが押されているならジャンプ
+	INC D ; インデックスをインクリメント
+	INC HL ; ポインタをインクリメント
+	LD A,D
+	CP 0FH ; 16バイトチェックしたか？
+	LD A,0H ; なにもキーが押されなかったときはAレジスタを0にする。
+	JR Z,SCAN_LOOP_RETURN ; 終了
+	JR KEY_LOOP_1 
+
+;
+; 何かが押されている時に実行される。
+;
+
+KEY_LOOP_2: 
+	CP 04H ; キーボード1段目のキーが押された。(ESC,1,2,3,4,5,6,7,8,9,0,-,=,BS)
+	JP Z, CODE_04
+
+	CP 08H ; キーボード2段目のキーが押された。(TAB,q,w,e,r,t,y,u,i,o,p,CR)
+	JP Z, CODE_08
+
+	CP 10H ; キーボード3段目のキーが押された。(control,a,s,d,f,g,h,j,k,l)
+	JP Z, CODE_10
+
+	CP 20H ; キーボード4段目のキーが押された。(shift,z,x,c,v,b,n,m,shift)
+	JP Z, CODE_20
+
+	CP 40H
+	JP Z, CODE_40
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;  CODE 04 キーボードの1段目
+;  (esc,1,2,3,4,5,6,7,8,9,0,-,=,bs)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+CODE_04:
+	LD A, L
+	AND 0FH
+
+	CP 00H ; ESCキーか？
+	JP Z, CODE_ESC ; ESCキー処理へ
+
+	LD B,L
+	LD IX, KEY_MAP
+MAP_ADD_04:
+	INC IX
+	DJNZ MAP_ADD_04
+	LD A,(IX+0)
+	PUSH AF
+	CALL KEY_BREAK_WAIT
+	POP AF
+	JP SCAN_LOOP_RETURN
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;  CODE 08 キーボードの2段目
+;  (tab,q,w,e,r,t,y,u,i,o,p,cr)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+CODE_08:
+	LD A, L ; ここでPORT_INDEXの下位8ビットのみを取り出している。
+			; これをインデックスに使っているので、PORT_INDEXのアドレスの下位8ビットの先頭は0でなくてはならない。
+	AND 0FH
+
+	CP 00H ; TABキーか？
+	JP Z, CODE_TAB ; TABキー処理へ
+
+	LD B,L
+	LD IX, KEY_MAP
+MAP_ADD_08:
+	INC IX
+	DJNZ MAP_ADD_08
+	LD A,(IX+10H)
+	PUSH AF
+	CALL KEY_BREAK_WAIT
+	POP AF
+	JP SCAN_LOOP_RETURN
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;  CODE 10 キーボードの3段目
+;  (control,a,s,d,f,g,h,j,k,l)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+CODE_10:
+	LD A, L ; ここでPORT_INDEXの下位8ビットのみを取り出している。
+			; これをインデックスに使っているので、PORT_INDEXのアドレスの下位8ビットの先頭は0でなくてはならない。
+	AND 0FH
+
+	CP 00H ; コントロールキーか？
+	JP Z, CODE_CONTROL ; コントロールキー処理へ
+
+	LD B,L
+	LD IX, KEY_MAP
+MAP_ADD_10:
+	INC IX
+	DJNZ MAP_ADD_10
+	LD A,(IX+20H)
+	PUSH AF
+	CALL KEY_BREAK_WAIT
+	POP AF
+
+	JP SCAN_LOOP_RETURN
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;  CODE 20 キーボードの4段目
+;  (shift,z,x,c,v,b,n,m,shift)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+CODE_20:
+	LD A, L ; ここでPORT_INDEXの下位8ビットのみを取り出している。
+			; これをインデックスに使っているので、PORT_INDEXのアドレスの下位8ビットの先頭は0でなくてはならない。
+	AND 0FH
+
+	CP 00H
+	JP Z, CODE_SHIFT ; シフトキー処理へ
+
+	LD B,L
+	LD IX, KEY_MAP
+MAP_ADD_20:
+	INC IX
+	DJNZ MAP_ADD_20
+	LD A,(IX+30H)
+	PUSH AF
+	CALL KEY_BREAK_WAIT
+	POP AF
+	JP SCAN_LOOP_RETURN
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;  CODE 40 キーボードの5段目
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+CODE_40:
+	JP KEY_LOOP_END
+
+;
+; 特殊キー(CONTROL,SHIFT, TAB)の処理
+;
+
+CODE_CONTROL:
+	CALL CONTROL_KEY_NEXT_GET
+	JP SCAN_LOOP_RETURN
+
+CODE_SHIFT:
+	CALL SHIFT_KEY_NEXT_GET
+	JP SCAN_LOOP_RETURN
+
+CODE_TAB:
+	LD A,09H ; TABキーコード
+	PUSH AF
+	CALL KEY_BREAK_WAIT
+	POP AF
+	JP SCAN_LOOP_RETURN
+
+CODE_ESC:
+	LD A,ESC ; ESCキーコード(1BH)
+	PUSH AF
+	CALL KEY_BREAK_WAIT
+	POP AF
+	JP SCAN_LOOP_RETURN
+
+KEY_LOOP_END:
+	LD A, ESC ; どれにも該当しないキーを押したときは、エスケープキー(1BH)を押したことにする。
+	JP SCAN_LOOP_RETURN
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; キーの押下が解放されるまで待つサブルーチン
+;
+
+KEY_BREAK_WAIT:
+	LD HL,PORT_INDEX ; キーボードポートの値が入っているメモリアドレスPORT_INDEX~PORT_INDEX+0xFHのポインタを先頭に戻している。
+	LD BC,0FDFH ; DJNZを使うので、B=0xf、C=0xDFにしている。Bがスキャン回数。Cがポート番号
+BREAK_SCAN_LOOP:
+	INC C ; 初回の処理で、C=0xDF+1=0xE0となる。
+	IN A,(C)
+	AND (HL) ; INIでスキャンした結果と照合。
+	LD (HL),A ; 値を、INIで入れたアドレスと同じところに格納する。
+	INC HL ; メモリアドレスをインクリメント。
+	DJNZ BREAK_SCAN_LOOP ; 16回繰り返す
+
+	LD HL,PORT_INDEX ; メモリアドレスポインタをPORT_INDEXの先頭に戻す。
+	LD D,0H ; インデックスを0にする。
+	LD B,0FH
+	LD E,0H
+
+BREAK_KEY_LOOP:
+	LD A, (HL) ; メモリアドレスからキースキャンの値を取り出す。
+	ADD A, E 
+	LD E, A ; Eにキースキャンの値を積算する。
+	INC D ; インデックスをインクリメント
+	INC HL ; ポインタをインクリメント
+	DJNZ BREAK_KEY_LOOP
+	LD A,E ; キースキャンの値の総和をAに戻す。
+	AND A ; ゼロかどうか判定の為、自分自身でANDをとる。
+	RET Z ; 全てのキーボードポートが0の時にリターンする。
+	JR KEY_BREAK_WAIT
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; SHIFTキーと同時に押されたキーをゲットするサブルーチン
+;
+
+SHIFT_KEY_NEXT_GET:
+	LD HL,PORT_INDEX ; キーボードポートの値が入っているメモリアドレスPORT_INDEX~PORT_INDEX+0xFHのポインタを先頭に戻している。
+	LD BC,0FDFH ; DJNZを使うので、B=0xf、C=0xDFにしている。Bがスキャン回数。Cがポート番号
+SHIFT_SCAN_LOOP:
+	INC C ; 初回の処理で、C=0xDF+1=0xE0となる。
+	IN A,(C)
+	LD (HL),A ; 値を、INIで入れたアドレスと同じところに格納する。
+	INC HL ; メモリアドレスをインクリメント。
+	DJNZ SHIFT_SCAN_LOOP ; 16回繰り返す
+
+	LD HL,PORT_INDEX ; メモリアドレスポインタをPORT_INDEXの先頭に戻す。
+	LD D,0H ; インデックスを 1 にする。
+	LD B,0FH ; B=FH=16
+	LD E,0H
+
+;
+; SHIFTキーを離すか、他のキーが押されるまではループする。
+;
+
+SHIFT_NEXT_KEY_LOOP:
+	LD A, (PORT_INDEX)
+	AND A
+	LD A,1BH
+	RET Z ; [EE00]=0、SHIFTキー押されてないならリターンする。
+	INC HL
+	INC D
+	LD A, (HL) ; メモリアドレスからキースキャンの値を取り出す。
+	AND A
+	JR NZ, SHIFT_KEY_LOOP ; キーが押下されている時はジャンプする。
+	LD A,D
+	CP 0FH ; D=A=16バイトチェックしたか？
+	JR Z, SHIFT_KEY_NEXT_GET ; 16バイト読み込んで、SHIFTキー以外何も押されていないなら、一番最初のループに戻る
+	JR SHIFT_NEXT_KEY_LOOP ; 16バイト読んでないなら、次のメモリを読む。
+	
+SHIFT_KEY_LOOP:
+	CP 04H
+	JP Z, CODE_04_SHIFT
+	CP 08H
+	JP Z, CODE_08_SHIFT
+	CP 10H
+	JP Z, CODE_10_SHIFT
+	CP 20H
+	JP Z, CODE_20_SHIFT
+
+
+CODE_04_SHIFT:
+	LD A,L
+	AND 0FH
+
+	CP 01H
+	JP Z, CODE_1_SHIFT
+	CP 02H
+	JP Z, CODE_2_SHIFT
+	CP 03H
+	JP Z, CODE_3_SHIFT
+	CP 04H
+	JP Z, CODE_4_SHIFT
+	CP 05H
+	JP Z, CODE_5_SHIFT
+	CP 06H
+	JP Z, CODE_6_SHIFT
+	CP 07H
+	JP Z, CODE_7_SHIFT
+	CP 08H
+	JP Z, CODE_8_SHIFT
+	CP 09H
+	JP Z, CODE_9_SHIFT
+
+CODE_08_SHIFT:
+	LD A,L
+	AND 0FH
+
+	CP 0BH
+	JP Z, CODE_AT_MARK_SHIFT
+	CP 0CH
+	JP Z, CODE_L_SQ_PAR_SHIFT
+
+CODE_10_SHIFT:
+	LD A,L
+	AND 0FH
+
+	CP 0AH
+	JP Z, CODE_SEMI_COLON_SHIFT
+	CP 0BH
+	JP Z, CODE_COLON_SHIFT
+	CP 0CH
+	JP Z, CODE_R_SQ_PAR_SHIFT
+
+CODE_20_SHIFT:
+
+	LD A,L
+	AND 0FH
+
+	CP 09H
+	JP Z, CODE_COMMA_SHIFT
+	CP 0AH
+	JP Z, CODE_PERIOD_SHIFT
+	CP 0BH
+	JP Z, CODE_SLASH_SHIFT
+
+	LD A,0H
+	RET
+
+CODE_1_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '!'
+	RET
+CODE_2_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, 22H
+	RET
+CODE_3_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '#'
+	RET
+CODE_4_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '$'
+	RET
+CODE_5_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '%'
+	RET
+CODE_6_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '&'
+	RET
+CODE_7_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, 27H ; 27Hは "'" 。シングルクォーテーション。
+	RET
+CODE_8_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '('
+	RET
+CODE_9_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, ')'
+	RET
+
+CODE_AT_MARK_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '`'
+	RET
+CODE_L_SQ_PAR_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '{'
+	RET
+CODE_SEMI_COLON_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '+'
+	RET
+CODE_COLON_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '*'
+	RET
+CODE_R_SQ_PAR_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '}'
+	RET
+CODE_COMMA_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '<'
+	RET
+CODE_PERIOD_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '>'
+	RET
+CODE_SLASH_SHIFT:
+	CALL KEY_BREAK_WAIT
+	LD A, '?'
+	RET
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Controlキーと同時に押されたキーをゲットするサブルーチン
+;
+
+CONTROL_KEY_NEXT_GET:
+	LD HL,PORT_INDEX ; キーボードポートの値が入っているメモリアドレスPORT_INDEX~PORT_INDEX+0xFHのポインタを先頭に戻している。
+	LD BC,0FDFH ; DJNZを使うので、B=0xf、C=0xDFにしている。Bがスキャン回数。Cがポート番号
+CONTROL_SCAN_LOOP:
+	INC C ; 初回の処理で、C=0xDF+1=0xE0となる。
+	IN A,(C)
+	LD (HL),A ; 値を、INIで入れたアドレスと同じところに格納する。
+	INC HL ; メモリアドレスをインクリメント。
+	DJNZ CONTROL_SCAN_LOOP ; 16回繰り返す
+
+	LD HL,PORT_INDEX ; メモリアドレスポインタをPORT_INDEXの先頭に戻す。
+	LD D,0H ; インデックスを 1 にする。
+	LD B,0FH ; B=FH=16
+	LD E,0H
+
+;
+; Controlキーを離すか、他のキーが押されるまではループする。
+;
+
+CONTROL_NEXT_KEY_LOOP:
+	LD A, (PORT_INDEX)
+	AND A
+	LD A,1BH
+	RET Z ; [EE00]=0、SHIFTキー押されてないならリターンする。
+	INC HL
+	INC D
+	LD A, (HL) ; メモリアドレスからキースキャンの値を取り出す。
+	AND A
+	JR NZ, CONTROL_KEY_LOOP ; キーが押下されている時はジャンプする。
+	LD A,D
+	CP 0FH ; D=A=16バイトチェックしたか？
+	JR Z, CONTROL_KEY_NEXT_GET ; 16バイト読み込んで、SHIFTキー以外何も押されていないなら、一番最初のループに戻る
+	JR CONTROL_NEXT_KEY_LOOP ; 16バイト読んでないなら、次のメモリを読む。
+	
+CONTROL_KEY_LOOP:
+	CP 08H
+	JP Z, CODE_08_CONTROL
+	CP 10H
+	JP Z, CODE_10_CONTROL
+	CP 20H
+	JP Z, CODE_20_CONTROL
+
+
+CODE_08_CONTROL:
+	LD A,L
+	AND 0FH
+
+	CP 03H
+	JP Z, CODE_E_CONTROL
+	CP 04H
+	JP Z, CODE_R_CONTROL
+	CP 07H
+	JP Z, CODE_U_CONTROL
+	CP 0AH
+	JP Z, CODE_P_CONTROL
+
+CODE_10_CONTROL:
+	LD A,L
+	AND 0FH
+
+	CP 02H
+	JP Z, CODE_S_CONTROL
+
+CODE_20_CONTROL:
+	LD A,L
+	AND 0FH
+
+	CP 01H
+	JP Z, CODE_Z_CONTROL
+	CP 02H
+	JP Z, CODE_X_CONTROL
+	CP 03H
+	JP Z, CODE_C_CONTROL
+
+	LD A,0H
+	RET
+
+
+CODE_E_CONTROL:
+	CALL KEY_BREAK_WAIT
+	LD A, 05H
+	RET
+CODE_C_CONTROL:
+	CALL KEY_BREAK_WAIT
+	LD A, 03H
+	RET
+CODE_P_CONTROL:
+	CALL KEY_BREAK_WAIT
+	LD A, 10H
+	RET
+CODE_R_CONTROL:
+	CALL KEY_BREAK_WAIT
+	LD A, 12H
+	RET
+CODE_S_CONTROL:
+	CALL KEY_BREAK_WAIT
+	LD A, 13H
+	RET
+CODE_U_CONTROL:
+	CALL KEY_BREAK_WAIT
+	LD A, 15H
+	RET
+CODE_X_CONTROL:
+	CALL KEY_BREAK_WAIT
+	LD A, 18H
+	RET
+CODE_Z_CONTROL:
+	CALL KEY_BREAK_WAIT
+	LD A, 1AH
+	RET
+
+
+;------------------------------------------------------------------------------
+; CTC初期化ルーチン
+;------------------------------------------------------------------------------
+CTC_INIT:
+        DI                  ; 割り込み禁止
+
+        ; Iレジスタ設定（IM2テーブルの上位バイト）
+        LD   A, 0FFh
+        LD   I, A
+
+        ; IM2モード設定
+        IM   2
+
+        ; 割り込みベクタテーブル初期化
+        ; 0xFF00からの256バイト（128エントリ）をダミーISRで埋める
+        LD   HL, IM2_TABLE
+        LD   DE, DUMMY_ISR
+        LD   B, 128         ; 128エントリ（256バイト）
+INIT_LOOP:
+        LD   (HL), E        ; 下位バイト
+        INC  HL
+        LD   (HL), D        ; 上位バイト
+        INC  HL
+        DJNZ INIT_LOOP
+
+        ; Ch0用ISRアドレスを設定（明示的に0xFF00に書き込む）
+        LD   HL, IM2_TABLE  ; HL = 0xFF00
+        LD   DE, CTC_CH0_ISR
+        LD   (HL), E        ; 下位バイトを0xFF00に
+        INC  HL
+        LD   (HL), D        ; 上位バイトを0xFF01に
+
+        ; CTCベクタベース設定
+        LD   A, VEC_BASE
+        OUT  (CTC_CH0), A
+
+        ; Ch0制御ワード設定
+        LD   A, 0B5h
+        OUT  (CTC_CH0), A
+
+        ; タイムコンスタント設定（156 = 約10ms）
+        LD   A, 156
+        OUT  (CTC_CH0), A
+
+        EI                  ; 割り込み許可
+        RET
+
+;------------------------------------------------------------------------------
+; ダミーISR（何もしないでリターン）
+;------------------------------------------------------------------------------
+DUMMY_ISR:
+        EI
+        RETI
+
+;------------------------------------------------------------------------------
+; CTC Ch0割り込みサービスルーチン
+;------------------------------------------------------------------------------
+CTC_CH0_ISR:
+		DI 			; 割り込み禁止
+        PUSH AF
+        PUSH BC
+        PUSH DE
+        PUSH HL
+
+        ; ; 10msカウンタをインクリメント
+        ; LD   A, (SOFT_TICKS)
+        ; INC  A
+        ; LD   (SOFT_TICKS), A
+
+        ; ; 2回に1回（20ms）だけ処理
+        ; CP   2
+        ; ; CP   0AH
+
+        ; JR   C, ISR_END     ; まだ2未満ならスキップ
+
+        ; ; カウンタリセット
+        ; XOR  A
+        ; LD   (SOFT_TICKS), A
+
+        ; ; ここに20ms周期の処理を書く
+        ; ; LD   HL, TICK_COUNTER
+        ; ; INC  (HL)           ; 20msカウンタをインクリメント
+ISR_END:
+        POP  HL
+        POP  DE
+        POP  BC
+        POP  AF
+        EI			; 割り込み許可
+        RETI
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; DMA COMMAND CHAIN
+;
+
+DMA_COMMANDS:
+	DB 15H,0C3H,0C3H,0C3H,0C3H,0C3H,0C3H
+	DB 0BBH,01H,0BFH
+	DB 6DH
+	DB 0C3H,0FFH,00H,2CH,010H,8DH
+	DB hstbuf.@L
+	DB hstbuf.@H ; this address is hstbuf address !!!!
+	DB 8AH
+	DB 0CFH,87H
+DMA_WRITE_COMMANDS:
+	DB 16H,0C3H,0C3H,0C3H,0C3H,0C3H,0C3H
+	DB 83H ; STOP DMA
+	DB 79H ; B->A
+	DB hstbuf.@L
+	DB hstbuf.@H  ; this address is hstbuf address !!!
+	DB 00H,0FFH ; 256yte transfer
+	DB 14H,28H,8DH
+	DB 0C3H,00H ; FDC data register
+	DB 8AH
+	DB 0CFH,05H
+	DB 0CFH,87H
+
+;
+; DMA WBOOT COMMAND CHAIN
+;
+DMA_WBOOT_COMMANDS:
+	DB 15H,0C3H,0C3H,0C3H,0C3H,0C3H,0C3H
+	DB 0BBH,01H,0BFH
+	DB 6DH
+	DB 0C3H,0FFH,00H,2CH,10H,8DH
+wboot_address:	DB 00H,0CCH ; CC00H is 58K MEMORY MODEL
+	DB 8AH
+	DB 0CFH,87H
+
+;
+OPENMSG:
+	DB CR,LF,"SORD M23 CP/M-80 V2.2 58K SYSTEM",CR,LF,00H
+;COPYMSG:
+;	DB "Copyright 1979 (C) by Digital Research.",CR,LF,00H
+;
+;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; SORD M23 memory
+;
+
+;
+; for CRT control
+;
+
+CURSOL_LOCATE: ; カーソル位置を保存する変数
+	DS 02H
+
+TOP_VIEW: ; 画面左上端のアドレスを保存する変数
+	DS 02H
+
+NEED_DO_SCROLL_POINT: ;	スクロールすべきポイントアドレスを保存する変数
+	DS 02H
+
+CR_BASE_ADDRESS: ; CRTコントローラのベースアドレス保存変数
+	DS 02H
+
+CR_BASE_ADDRESS_PRE: ; CRTコントローラのベースアドレス保存変数（前回値）
+	DS 02H
+
+CR_NOW_CURSOL_LOCATE: ; 現在のカーソル位置保存変数
+	DS 02H
+
+CR_NEW_ORIGIN: ; 新しい表示開始アドレス保存変数
+	DS 02H
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Keyboard map
+;
+
+KEY_MAP:
+	DB 0H,'1234567890-=',5CH,08H,0H
+	DB 0H,'QWERTYUIOP@',5BH,0DH,0DH,0H
+	DB 0H,'ASDFGHJKL',3BH,3AH,5DH,0H,0H,0H
+	DB 0H,'ZXCVB',20H,'NM',2CH,2EH,2FH,0H,0H,0H
+
+;*****************************************************
+;*                                                   *
+;*	Unitialized RAM data areas		                 *
+;*                                                   *
+;*****************************************************
+;
+sekdsk:		DS	1	;seek disk number
+sektrk:		DS	2	;seek track number
+seksec:		DS	1	;seek sector number
+;
+hstdsk:		DS	1	;host disk number
+hsttrk:		DS	2	;host track number
+hstsec:		DS	1	;host sector number
+;
+sekhst:		DS	1	;seek shr secshf
+hstact:		DS	1	;host active flag
+hstwrt:		DS	1	;host written flag
+;
+unacnt:		DS	1	;unalloc rec cnt
+unadsk:		DS	1	;last unalloc disk
+unatrk:		DS	2	;last unalloc track
+unasec:		DS	1	;last unalloc sector
+;
+erflag:		DS	1	;error reporting
+rsflag:		DS	1	;read sector flag
+readop:		DS	1	;1 if read operation
+wrtype:		DS	1	;write operation type
+dmaadr:		DS	2	;last dma address
+hstbuf:		DS	hstsiz	;host buffer
+;
+;	the remainder of the cbios is reserved uninitialized
+;	data area, and does not need to be a Part of the
+;	system	memory image (the space must be available,
+;	however, between"begdat" and"enddat").
+;
+track:		DS	2	;two bytes for expansion
+sector:		DS	2	;two bytes for expansion
+dmaad:		DS	2	;direct memory address
+diskno:		DS	1	;disk number 0-15
+;
+;	scratch ram area for bdos use
+begdat	EQU	$	;beginning of data area
+dirbf:		DS	128	;scratch directory area
+all00:		DS	31	;allocation vector 0
+all01:		DS	31	;allocation vector 1
+all02:		DS	31	;allocation vector 2
+all03:		DS	31	;allocation vector 3
+chk00:		DS	16	;check vector 0
+chk01:		DS	16	;check vector 1
+chk02:		DS	16	;check vector 2
+chk03:		DS	16	;check vector 3
+
+SOFT_TICKS:   DS   2 ; 10msカウンタ（0または1）
+TICK_COUNTER: DS   2 ; タイマーカウンタ
+
+;
+;
+; key input scan buffer
+; 末尾1バイトのアドレスが00であることを期待している。
+;
+	org KEYBOARD_SCAN_BUFFER
+
+PORT_INDEX:
+	DS 16
+
+enddat	EQU	$			; end of data area
+datsiz	EQU	$-begdat	; size of data area
+
+	END
