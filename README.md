@@ -1,6 +1,39 @@
 # CPM80_SORD_M23
 CP/M-80 for SORD M23
 
+This is a project to port CP/M-80 to the SORD M23.
+
+At the current stage, the basic BIOS has been completed.
+Work is ongoing to fully implement control codes and screen control routines.
+
+File descriptions
+
+bios.z80
+BIOS source file
+
+cpmloader08.z80
+CP/M-80 loader (placed at the beginning of a floppy disk track)
+
+updateCPMSYS.py
+Python script to embed bios.bin into CPM.SYS
+
+CPM.SYS
+CP/M-80 system file, executable on the SORD M23 emulator
+
+cpm_M23.d88
+Disk image for the SORD M23 emulator (D88 format)
+
+2026/01/01
+
+TAB and ESC keys implemented
+
+Cursor X/Y coordinate calculation subroutine implemented
+
+ToDo
+
+Implement subroutines required for S-OS (not directly related to CP/M)
+
+
 SORD M23へのCP/M-80の移植プロジェクトです。
 
 現状で、基本的なBIOSは完成しています。現在は、コントロールコードの完備、画面制御コードの完備を行っています。
