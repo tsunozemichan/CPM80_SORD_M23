@@ -45,7 +45,9 @@ SORD M23へのCP/M-80の移植プロジェクトです。
 - updateCPMSYS.py bios.binをCPM.SYSに組み込むpyrhonスクリプト
 - CPM.SYS CP/M-80のシステム。SORD M23エミュレータで実行可能
 - cpm_M23.d88 SORD M23エミュレータ用のディスクイメージ(D88形式)
-
+- change_cpmsys.py rawディスクイメージのCPM.SYS置換ツール
+- buid_and_update_cpm.bat BIOSをアセンブルし、CPM.SYSに組み込み、さらにd88イメージに組み込むバッチファイル
+- README_BIOS_BUILD.md BIOSビルド手順書
 
 2026/01/01
 
