@@ -12,3 +12,4 @@ CPM_patched.SYS
 cpmloader08.lst
 cpmloader08.bin
 bios62k11.z80
+build_and_update_cpm.ps1
