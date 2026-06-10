@@ -192,7 +192,7 @@ DO_SEEK2:
 	JR Z,GO_DMA2
 	JR DO_SEEK2
 GO_DMA2:
-	LD B,08 ; LOOP COUNT is 8 sectors
+	LD B,8 ; LOOP COUNT is 8 sectors
 	LD C,01 ; INITIAL SECTOR NO. is 1 to 8 sector reading
 ;
 READ_LOOP2:
