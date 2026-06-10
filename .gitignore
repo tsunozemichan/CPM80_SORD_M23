@@ -6,3 +6,9 @@ m23.ini
 MEMO.txt
 VIDEO_MEMO.txt
 m23.txt
+bios.bin
+bios.lst
+CPM_patched.SYS
+cpmloader08.lst
+cpmloader08.bin
+bios62k11.z80
