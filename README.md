@@ -1,6 +1,4 @@
-# CPM80_SORD_M23
-
-## CP/M-80 for SORD M23
+# CP/M-80 for SORD M23
 
 This is a project to port CP/M-80 to the SORD M23.
 
