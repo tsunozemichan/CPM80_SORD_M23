@@ -1,5 +1,6 @@
 # CPM80_SORD_M23
-CP/M-80 for SORD M23
+
+## CP/M-80 for SORD M23
 
 This is a project to port CP/M-80 to the SORD M23.
 
@@ -23,16 +24,6 @@ CP/M-80 system file, executable on the SORD M23 emulator
 cpm_M23.d88
 Disk image for the SORD M23 emulator (D88 format)
 
-2026/01/01
-
-TAB and ESC keys implemented
-
-Cursor X/Y coordinate calculation subroutine implemented
-
-ToDo
-
-Implement subroutines required for S-OS (not directly related to CP/M)
-
 
 SORD M23へのCP/M-80の移植プロジェクトです。
 
@@ -50,10 +41,11 @@ SORD M23へのCP/M-80の移植プロジェクトです。
 - README_BIOS_BUILD.md BIOSビルド手順書
 
 2026/01/01
-
 - TAB、ESCキーの実装完了
 - カーソルのX,Y座標の計算サブルーチンの実装完了
 
-ToDo:
-- (CP/Mには直接関係ないが)S-OSに必要なサブルーチンを実装していく
+2026/06/11
+- Display Driverを大改訂。STARTREKのエンタープライズ号がややまともに表示されるようになった。
+- Keyboard Driverを更新。CP/Mには意味がないがタイマ割り込みを利用したリアルタイムキー入力に変更。
+
 
