@@ -1,10 +1,9 @@
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
-; BIOS of CP/M-80 ver2.2 for SORD M23 ver.20230103
-; 	The creator of the machine-dependent part is tsunozemi@twitter
-;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
+
+;==============================================================
+; BIOS of CP/M-80 ver2.2 for SORD M23 ver.20260523
+;	The creator of the machine-dependent part is tsunozemi@twitter
+;	Display and keyboard drivers are added by tsunozemi@twitter 2026/05/23
+;==============================================================
 
 msize	EQU	58	;cp/m version memory size in kilobytes
 
@@ -18,7 +17,6 @@ bdos	EQU	CCP+806H	;base of bdos
 bios	EQU	CCP+1600H	;base of bios
 cdisk	EQU	0004H	;current disk number 0=a,... l5=p
 iobyte	EQU	0003H	;intel i/o byte
-;
 
 ;
 ; FDC I/O ports
@@ -31,7 +29,7 @@ FDC_DATA_REG 	EQU 0C3H
 DMA_ADDRESS 	EQU 0C4H
 FDC_CONTROL_REG EQU 0C5H
 DMA_BANK_SEL 	EQU 0C6H
-;
+
 ; WBOOT Transfer Address
 WBOOT_ADDRESS_L EQU wboot_address
 WBOOT_ADDRESS_H EQU WBOOT_ADDRESS_L + 1H
@@ -47,15 +45,15 @@ WIDTH_SCREEN EQU 50H ; 80文字モードの1行のバイト数
 CURSOR_XY_ADDR EQU 0FFF0H ; カーソルのX,Y座標を保存するアドレス
 
 ; Ascii code Constants
-CR	EQU	0DH ; Carriage Return
-LF	EQU	0AH ; Line Feed
+BEL EQU 07H ; Bell
 BS	EQU	08H ; Back Space
-DEL	EQU	7FH ; Delete
 HT  EQU 09H ; Horizontal Tab
+LF	EQU	0AH ; Line Feed
 VT  EQU 0BH ; Vertical Tab
 BEL EQU 07H ; Bell
 FF  EQU 0CH ; Formfeed
 ESC EQU 1BH ; Escape
+DEL	EQU	7FH ; Delete
 
 
 ; Display Constants
@@ -75,12 +73,9 @@ VEC_BASE    EQU 00h         ; CTCベクタベース
 IM2_TABLE   EQU 0FF00h      ; IM2割り込みベクタテーブル
 CTC_VEC_CH0 EQU 00h         ; Ch0のベクタオフセット
 
-;
-;*****************************************************
-;*                                                   *
-;*         CP/M to host disk constants               *
-;*                                                   *
-;*****************************************************
+;==============================================================
+; CP/M to host disk constants
+;==============================================================
 blksiz equ 2048	;CP/M allocation size
 hstsiz equ 256	;host disk sector size
 hstspt equ 16	;host disk sectors/trk
@@ -89,12 +84,10 @@ cpmspt equ hstblk * hstspt	;CP/M sectors/track
 secmsk equ hstblk-1	;sector mask
 ;smask	hstblk	;compute sector mask
 secshf equ 1	;log2(hstblk)
-;
-;*****************************************************
-;*                                                   *
-;*        BDOS constants on entry to write           *
-;*                                                   *
-;*****************************************************
+
+;==============================================================
+; BDOS constants on entry to write
+;==============================================================
 wrall equ 0	;write to allocated
 wrdir equ 1	;write to directory
 wrual equ 2	;write to unallocated
@@ -181,7 +174,7 @@ boot:	;simplest case is to just perform parameter initialization
 		PUSH AF
 		PUSH HL
 		LD HL,OPENMSG
-		CALL STROUT
+		CALL STRING_OUT
 		POP HL
 		POP AF
 
@@ -190,11 +183,9 @@ boot:	;simplest case is to just perform parameter initialization
 
 		JP	gocpm	;initialize and go to cp/m
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
+;==============================================================
 ; worm boot process
-;
-
+;==============================================================
 wboot:	;simplest case is to read the disk until all sectors loaded
 
 		; WBOOTでは、CPPとBDOSをディスクから再ロードする。
@@ -262,11 +253,9 @@ READ_LOOP_WBOOT1:
 
 		JP gocpm ; CP/Mを再起動
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
+;==============================================================
 ; cpm go
-;
-
+;==============================================================
 gocpm:
 		LD	A, 0c3h	;c3 is a jmp instruction
 		LD	(0),A	;for jmp to wboot
@@ -311,8 +300,7 @@ conout:	;console character output from register c
 		PUSH BC
 		PUSH DE
 		PUSH HL
-		LD A,C
-		CALL PUTCHAR
+		CALL CONOUT_PROCESS
 		POP HL
 		POP DE
 		POP BC
@@ -400,17 +388,14 @@ setdma:	;set	dma address given by registers b and c
 		LD	H, B	;high order address
 		LD	(dmaadr),HL	;save the address
 		RET
-;
-;
-;*****************************************************
-;*                                                   *
-;*	The READ entry point takes the place of      *
-;*	the previous BIOS defintion for READ.        *
-;*                                                   *
-;*****************************************************
+
+;==============================================================
+; The READ entry point takes the place of
+; the previous BIOS defintion for READ.
+;==============================================================
 read:	;perform read operation (usually this is similar to write
-;	so we will allow space to set up read command, then use
-;	common code in write)
+		;	so we will allow space to set up read command, then use
+		;	common code in write)
 	;read the selected CP/M sector
 		XOR	A
 		LD	(unacnt),A
@@ -420,15 +405,11 @@ read:	;perform read operation (usually this is similar to write
 		LD	A,wrual
 		LD	(wrtype),A	;treat as unalloc
 		JP	rwoper	;to perform the read
-;
-;
-;
-;*****************************************************
-;*                                                   *
-;*	The WRITE entry point takes the place of     *
-;*	the previous BIOS defintion for WRITE.       *
-;*                                                   *
-;*****************************************************
+
+;==============================================================
+; The WRITE entry point takes the place of
+; the previous BIOS defintion for WRITE.
+;==============================================================
 write:
 	;write the selected CP/M sector
 		XOR	A	;0 to accumulator
@@ -497,13 +478,11 @@ alloc:
 		LD	(unacnt),A	;unacnt = 0
 		INC	A	;1 to accum
 		LD	(rsflag),A	;rsflag = 1
-;
 
-;******************************************************
-;*                                                    *
-;*	Common code for READ and WRITE follows            *
-;*  Modified Interrupt Handling 20251230 by tsunozemi *
-;******************************************************
+;==============================================================
+; Common code for READ and WRITE follows
+; Modified Interrupt Handling 20251230 by tsunozemi
+;==============================================================
 rwoper:
 	;enter here to perform the read/write
 		XOR	A	;zero to accum
@@ -608,13 +587,10 @@ rwmove:
 		CALL	writehst
 		LD	A,(erflag)
 		RET
-;
-;
-;*****************************************************
-;*                                                   *
-;*	Utility subroutine for 16-bit compare        *
-;*                                                   *
-;*****************************************************
+
+;==============================================================
+; Utility subroutine for 16-bit compare
+;==============================================================
 sektrkcmp:
 	;HL = .unatrk or .hsttrk, compare with sektrk
 		EX	DE,HL
@@ -628,15 +604,12 @@ sektrkcmp:
 		LD	A,(DE)
 		CP	(HL)	;sets flags
 		RET
-;
-;
-;*****************************************************
-;*                                                   *
-;*	WRITEHST performs the physical write to      *
-;*	the host disk, READHST reads the physical    *
-;*	disk.					     *
-;*                                                   *
-;*****************************************************
+
+;==============================================================
+; WRITEHST performs the physical write to
+;	the host disk, READHST reads the physical
+;	disk.
+;==============================================================
 writehst:
 	;hstdsk = host disk #, hsttrk = host track #,
 	;hstsec = host sect #. write "hstsiz" bytes
@@ -780,24 +753,21 @@ GO_DMA_AND_READ_WBOOT0:
 	RET
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
+;==============================================================
 ; SORD M23用CRTコントロールドライバ、キーボードドライバ
-;
+;==============================================================
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
+;==============================================================
 ; FDC 初期化ルーチン
-;
+;==============================================================
 FDC_INIT:
 	LD A,51H
 	LD (FDC_CONTROL_REG),A
 	RET
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
+;==============================================================
 ; キーボード初期化ルーチン
-;
+;==============================================================
 KBD_INIT:
 ;
 ; キーボードスキャンバッファーを0で埋める。必要ないかも。
@@ -816,26 +786,23 @@ KBD_INIT:
 	LDIR
 	RET
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
+;==============================================================
 ; CRT 初期化ルーチン
-;
-
+;==============================================================;
 CRT_INIT:
-
 	LD HL,0F000H ; VRAMの左上のアトリビュートアドレス
 	LD BC,0800H
 
 ; カーソル座標を00Hに設定する。
 ; 注：画面左上がカーソル座標では0000Hになる。VRAMにおけるテキスト画面左上(F800H)ではないことに注意。
 	LD A,0EH ; R14 (cursor H)
-	OUT (CRTC_ADD),A
+	OUT (CRTC_ADDRESS_PORT),A
 	LD A,0H
-	OUT (CRTC_VAL),A
+	OUT (CRTC_VALUE_PORT),A
 	LD A,0FH ; R15 (cursor L)
-	OUT (CRTC_ADD),A
+	OUT (CRTC_ADDRESS_PORT),A
 	LD A,00H
-	OUT (CRTC_VAL),A
+	OUT (CRTC_VALUE_PORT),A
 
 ; カーソルの形状と点滅の設定
 	LD A,0AH ; R10 (CURSOR start address)
@@ -848,7 +815,7 @@ CRT_INIT:
 	OUT (CRTC_ADD),A
 	LD A,0AH
 ;	LD A,0H ; 表示せず。
-	OUT (CRTC_VAL),A
+	OUT (CRTC_VALUE_PORT),A
 
 ;
 ; 	一度画面全てを消す(スペースで埋める)。
@@ -871,11 +838,15 @@ CLEAR_ALL_LINE:
 
 	RET ; 初期化処理終了
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
-; CRTCコントロールサブルーチン群
-;
 
+;==============================================================
+; SORD M23 CP/M ディスプレイドライバ
+; CPU:  Z80
+; CRTC: HD46505 (MC6845)
+; テキストモード: 80桁 × 25行
+;==============================================================
+;
+; [提供サブルーチン一覧]
 ;
 ; VRAM_TXT_TOP : VRAMテキストエリアの先頭(F800H)
 ; CURSOR_LOCATE : 現在のカーソル位置
@@ -1280,20 +1251,24 @@ UPDATE_TOP_VIEW:
 	; 1行スクロール
 	;
 	PUSH AF
-	LD A,0CH ; START ADDRESS HIGH
-	OUT (CRTC_ADD),A
-	LD A,H ; スクロールしたときに左隅になるVRAMの上位アドレス
-	OUT (CRTC_VAL),A
-	LD A,0DH ; START ADDRESS LOW
-	OUT (CRTC_ADD),A
-	LD A,L ; スクロールしたときに左隅になるVRAMの下位アドレス
-	OUT (CRTC_VAL),A
+	PUSH DE
+	PUSH HL
+	LD HL,(CURRENT_CURSOR_LOCATE) ; 現在のカーソル位置をHLにロード
+	LD A,0EH ; R14 (cursor H)
+	OUT (CRTC_ADDRESS_PORT),A
+	LD A,H
+	OUT (CRTC_VALUE_PORT),A ; カーソルの上位アドレス設定
+	LD A,0FH ; R15 (cursor L)
+	OUT (CRTC_ADDRESS_PORT),A
+	LD A,L
+	OUT (CRTC_VALUE_PORT),A ; カーソルの下位アドレス設定
+	POP HL
+	POP DE
 	POP AF
-SCROLL_END:
 	RET
 
-
-
+;==============================================================
+; STRING_OUT
 ;
 ; 文字列表示ルーチン (末尾に0が出現するまで表示する)
 ;
@@ -1445,9 +1420,7 @@ DIVIDE_LOOP_CURSOR_END:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
 ; キースキャン サブルーチン
-;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
+;==============================================================
 KEY_SCAN_WRAPPER:
 	PUSH HL
 	PUSH BC
@@ -1515,7 +1488,6 @@ KEY_LOOP_2:
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
 ;  CODE 04 キーボードの1段目
 ;  (esc,1,2,3,4,5,6,7,8,9,0,-,=,bs)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1539,7 +1511,6 @@ MAP_ADD_04:
 	JP SCAN_LOOP_RETURN
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
 ;  CODE 08 キーボードの2段目
 ;  (tab,q,w,e,r,t,y,u,i,o,p,cr)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1563,13 +1534,10 @@ MAP_ADD_08:
 	POP AF
 	JP SCAN_LOOP_RETURN
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
 ;  CODE 10 キーボードの3段目
 ;  (control,a,s,d,f,g,h,j,k,l)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 CODE_10:
 	LD A, L ; ここでPORT_INDEXの下位8ビットのみを取り出している。
 			; これをインデックスに使っているので、PORT_INDEXのアドレスの下位8ビットの先頭は0でなくてはならない。
@@ -1591,11 +1559,9 @@ MAP_ADD_10:
 	JP SCAN_LOOP_RETURN
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
 ;  CODE 20 キーボードの4段目
 ;  (shift,z,x,c,v,b,n,m,shift)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 CODE_20:
 	LD A, L ; ここでPORT_INDEXの下位8ビットのみを取り出している。
 			; これをインデックスに使っているので、PORT_INDEXのアドレスの下位8ビットの先頭は0でなくてはならない。
@@ -1620,7 +1586,6 @@ MAP_ADD_20:
 ;  CODE 40 キーボードの5段目
 ;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 CODE_40:
 	JP KEY_LOOP_END
 
@@ -1707,6 +1672,7 @@ SHIFT_SCAN_LOOP:
 	LD B,0FH ; B=FH=16
 	LD E,0H
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
 ; SHIFTキーを離すか、他のキーが押されるまではループする。
 ;
@@ -1735,7 +1701,6 @@ SHIFT_KEY_LOOP:
 	JP Z, CODE_10_SHIFT
 	CP 20H
 	JP Z, CODE_20_SHIFT
-
 
 CODE_04_SHIFT:
 	LD A,L
@@ -1781,7 +1746,6 @@ CODE_10_SHIFT:
 	JP Z, CODE_R_SQ_PAR_SHIFT
 
 CODE_20_SHIFT:
-
 	LD A,L
 	AND 0FH
 
@@ -1886,6 +1850,7 @@ CONTROL_SCAN_LOOP:
 	LD B,0FH ; B=FH=16
 	LD E,0H
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
 ; Controlキーを離すか、他のキーが押されるまではループする。
 ;
@@ -1983,9 +1948,9 @@ CODE_Z_CONTROL:
 	RET
 
 
-;------------------------------------------------------------------------------
+;==============================================================
 ; CTC初期化ルーチン
-;------------------------------------------------------------------------------
+;==============================================================
 CTC_INIT:
         DI                  ; 割り込み禁止
 
@@ -2030,16 +1995,16 @@ INIT_LOOP:
         EI                  ; 割り込み許可
         RET
 
-;------------------------------------------------------------------------------
+;==============================================================
 ; ダミーISR（何もしないでリターン）
-;------------------------------------------------------------------------------
+;==============================================================
 DUMMY_ISR:
         EI
         RETI
 
-;------------------------------------------------------------------------------
+;==============================================================
 ; CTC Ch0割り込みサービスルーチン
-;------------------------------------------------------------------------------
+;==============================================================
 CTC_CH0_ISR:
 		DI 			; 割り込み禁止
         PUSH AF
@@ -2074,12 +2039,9 @@ ISR_END:
         RETI
 
 
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
+;==============================================================
 ; DMA COMMAND CHAIN
-;
-
+;==============================================================
 DMA_COMMANDS:
 	DB 15H,0C3H,0C3H,0C3H,0C3H,0C3H,0C3H
 	DB 0BBH,01H,0BFH
@@ -2102,9 +2064,9 @@ DMA_WRITE_COMMANDS:
 	DB 0CFH,05H
 	DB 0CFH,87H
 
-;
+;==============================================================
 ; DMA WBOOT COMMAND CHAIN
-;
+;==============================================================
 DMA_WBOOT_COMMANDS:
 	DB 15H,0C3H,0C3H,0C3H,0C3H,0C3H,0C3H
 	DB 0BBH,01H,0BFH
@@ -2114,20 +2076,19 @@ wboot_address:	DB 00H,0CCH ; CC00H is 58K MEMORY MODEL
 	DB 8AH
 	DB 0CFH,87H
 
-;
+;==============================================================
+; OPENMSG
+;==============================================================	
 OPENMSG:
-	DB CR,LF,"SORD M23 CP/M-80 V2.2 58K SYSTEM",CR,LF,00H
+	DB "SORD M23 CP/M-80 V2.2 58K SYSTEM",00H
 ;COPYMSG:
 ;	DB "Copyright 1979 (C) by Digital Research.",CR,LF,00H
-;
-;
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
+
+;==============================================================
 ; SORD M23 memory
-;
-
-;
+;==============================================================
+;==============================================================
 ; for CRT control
 ;
 
@@ -2155,20 +2116,18 @@ CR_NEW_ORIGIN: ; 新しい表示開始アドレス保存変数
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
 ; Keyboard map
-;
-
+;==============================================================
 KEY_MAP:
 	DB 0H,'1234567890-=',5CH,08H,0H
 	DB 0H,'QWERTYUIOP@',5BH,0DH,0DH,0H
 	DB 0H,'ASDFGHJKL',3BH,3AH,5DH,0H,0H,0H
 	DB 0H,'ZXCVB',20H,'NM',2CH,2EH,2FH,0H,0H,0H
 
-;*****************************************************
-;*                                                   *
-;*	Unitialized RAM data areas		                 *
-;*                                                   *
-;*****************************************************
+;==============================================================
 ;
+; Unitialized RAM data areas
+;
+;==============================================================
 sekdsk:		DS	1	;seek disk number
 sektrk:		DS	2	;seek track number
 seksec:		DS	1	;seek sector number
@@ -2229,11 +2188,10 @@ CURRENT_CURSOR_AT_LINE:	DS 1	; 現在の行のカーソル位置
 ;
 ; key input scan buffer
 ; 末尾1バイトのアドレスが00であることを期待している。
-;
-	org KEYBOARD_SCAN_BUFFER
+;==============================================================
+	ORG KEYBOARD_SCAN_BUFFER
 
-PORT_INDEX:
-	DS 16
+PORT_INDEX:	DS 16
 
 enddat	EQU	$			; end of data area
 datsiz	EQU	$-begdat	; size of data area
