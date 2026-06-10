@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-cpm_bios_replace.py
+updateCPMSYS.py
 Usage:
-  python cpm_bios_replace.py CPM.SYS CUSTOM_BIOS.BIN [OUTPUT.SYS]
+  python updateCPMSYS.py CPM.SYS CUSTOM_BIOS.BIN [OUTPUT.SYS]
 
 - CPM.SYS の 0x1600 以降を CUSTOM_BIOS.BIN で置き換えて新しい SYS を作成します
 - 出力は既定で CPM_patched.SYS（第3引数で変更可）

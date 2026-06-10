@@ -1,6 +1,6 @@
 
 ;==============================================================
-; BIOS of CP/M-80 ver2.2 for SORD M23 ver.20260523
+; BIOS of CP/M-80 ver2.2 for SORD M23 ver.20260610
 ;	The creator of the machine-dependent part is tsunozemi@twitter
 ;	Display and keyboard drivers are added by tsunozemi@twitter 2026/05/23
 ;==============================================================
@@ -18,9 +18,11 @@ bios	EQU	CCP+1600H	;base of bios
 cdisk	EQU	0004H	;current disk number 0=a,... l5=p
 iobyte	EQU	0003H	;intel i/o byte
 
+;=======================
 ;
 ; FDC I/O ports
 ;
+;=======================
 FDC_COMMAND_REG EQU 0C0H
 FDC_STATUS_REG 	EQU FDC_COMMAND_REG
 FDC_TRACK_REG 	EQU 0C1H
@@ -30,13 +32,19 @@ DMA_ADDRESS 	EQU 0C4H
 FDC_CONTROL_REG EQU 0C5H
 DMA_BANK_SEL 	EQU 0C6H
 
+;=======================
+;
 ; WBOOT Transfer Address
+;
+;=======================
 WBOOT_ADDRESS_L EQU wboot_address
 WBOOT_ADDRESS_H EQU WBOOT_ADDRESS_L + 1H
 
+;=======================
 ;
 ; CRTC ports
 ;
+;=======================
 VRAM_TXT_TOP EQU 0F800H
 VRAM_ATR_TOP EQU 0F000H
 CRTC_ADDRESS_PORT EQU 0F0H
@@ -45,9 +53,11 @@ WIDTH_SCREEN EQU 50H ; 80文字モードの1行のバイト数
 CURSOR_XY_ADDR EQU 0FFF0H ; カーソルのX,Y座標を保存するアドレス
 
 
-;================
+;=======================
+;
 ; Ascii code Constants
-;================
+;
+;=======================
 CR	EQU	0DH ; Carriage Return
 LF	EQU	0AH ; Line Feed
 BS	EQU	08H ; Back Space
@@ -64,9 +74,9 @@ ESC EQU 1BH ; Escape
 NUMBER_OF_CHARACTER_AT_LINE	EQU 80 ; 1行の文字数
 MAX_LINE  					EQU 24 ; 行数
 
-; Keyboard scan buffer
+; Keyboard scan buffer address
 ; キーボードスキャンの実装上、末尾のアドレスが00であることが条件になっている。
-KEYBOARD_SCAN_BUFFER EQU 0EE00H
+KEYBOARD_SCAN_BUFFER EQU 0EF00H ; バグのもと。いつか修正する。
 
 
 ; CTC Timer Initialization for CP/M
